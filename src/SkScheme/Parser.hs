@@ -3,13 +3,13 @@ module SkScheme.Parser
   )
 where
 
+import Control.Monad.Error
 import Data.Functor
 import Data.Ratio (Rational, (%))
 import Numeric (readHex, readOct)
 import SkScheme.Eval
 import SkScheme.Types
 import Text.ParserCombinators.Parsec hiding (spaces)
-import Control.Monad.Error 
 
 symbol :: Parser Char
 symbol = oneOf "!$%&|*+-/:<=?>@^_~#"
