@@ -1,81 +1,85 @@
 module SkScheme.Eval
   ( eval,
-    showVal,
-    trapError,
-    extractValue,
+    primitiveBindings,
   )
 where
 
 import Control.Monad.Error
 import Data.Functor ((<&>))
+import SkScheme.Env
 import SkScheme.Types
 
-showVal :: LispVal -> String
-showVal (String contents) = "\"" ++ contents ++ "\""
-showVal (Atom name) = name
-showVal (Number contents) = show contents
-showVal (Float contents) = show contents
-showVal (Rational contents) = show contents
-showVal (Bool True) = "#t"
-showVal (Bool False) = "#f"
-showVal (List contents) = "(" ++ unwordsList contents ++ ")"
-showVal (DottedList head tail) = "(" ++ unwordsList head ++ " . " ++ showVal tail ++ ")"
-
-instance Show LispVal where show = showVal
-
-showError :: LispError -> String
-showError (UnboundVar msg varname) = msg ++ ": " ++ varname
-showError (BadSpecialForm msg form) = msg ++ ": " ++ show form
-showError (NotFunction msg func) = msg ++ ": " ++ show func
-showError (NumArgs expected found) = "Expected " ++ show expected ++ " args: found values " ++ unwordsList found
-showError (TypeMismatch expected found) = "Invalid type: expected " ++ expected
-showError (Parser parseErr) = "Parse error at " ++ show parseErr
-
-unwordsList :: [LispVal] -> String
-unwordsList = unwords . map showVal
-
-instance Show LispError where show = showError
-
-instance Error LispError where
-  noMsg = Default "An error has occurred"
-  strMsg = Default
-
-trapError action = catchError action (return . show)
-
-extractValue :: ThrowsError a -> a
-extractValue (Right val) = val
-
-eval :: LispVal -> ThrowsError LispVal
-eval val@(String _) = return val
-eval val@(Number _) = return val
-eval val@(Bool _) = return val
-eval (List [Atom "quote", val]) = return val
-eval (List [Atom "if", pred, conseq, alt]) =
+eval :: Env -> LispVal -> IOThrowsError LispVal
+eval env val@(String _) = return val
+eval env val@(Number _) = return val
+eval env val@(Bool _) = return val
+eval env (Atom id) = getVar env id
+eval env (List [Atom "quote", val]) = return val
+eval env (List [Atom "if", pred, conseq, alt]) =
   do
-    result <- eval pred
+    result <- eval env pred
     case result of
-      Bool False -> eval alt
-      otherwise -> eval conseq
-eval (List (Atom "cond" : xs)) =
+      Bool False -> eval env alt
+      otherwise -> eval env conseq
+eval env (List [Atom "set!", Atom var, form]) =
+  eval env form >>= setVar env var
+eval env (List [Atom "define", Atom var, form]) =
+  eval env form >>= defineVar env var
+eval env (List (Atom "define" : List (Atom var : params) : body)) =
+  makeNormalFunc env params body >>= defineVar env var
+eval env (List (Atom "define" : DottedList (Atom var : params) varargs : body)) =
+  makeVarargs varargs env params body >>= defineVar env var
+eval env (List (Atom "lambda" : List params : body)) =
+  makeNormalFunc env params body
+eval env (List (Atom "lambda" : DottedList params varargs : body)) =
+  makeVarargs varargs env params body
+eval env (List (Atom "lambda" : varargs@(Atom _) : body)) =
+  makeVarargs varargs env [] body
+eval env (List (Atom "cond" : xs)) =
   do
-    let expression = head xs
-    case expression of
-      (List [Atom "else", pred]) -> eval pred
+    let expr = head xs
+    case expr of
+      (List [Atom "else", pred]) -> eval env pred
       (List [pred, conseq]) -> do
-        result <- eval pred
+        result <- eval env pred
         case result of
-          Bool False -> eval $ List (Atom "cond" : drop 1 xs)
-          otherwise -> eval conseq
+          Bool False -> eval env $ List (Atom "cond" : drop 1 xs)
+          otherwise -> eval env conseq
       badForm -> throwError $ BadSpecialForm "Syntax error in `cond` expression" badForm
-eval (List (Atom func : args)) = mapM eval args >>= apply func
-eval badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
+eval env (List (function : args)) =
+  do
+    func <- eval env function
+    argVals <- mapM (eval env) args
+    apply func argVals
+eval _ badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
 
-apply :: String -> [LispVal] -> ThrowsError LispVal
-apply func args =
-  maybe
-    (throwError $ NotFunction "Unrecognized primitive func args" func)
-    ($ args)
-    (lookup func primitives)
+apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
+apply (PrimitiveFunc func) args = liftThrows $ func args
+apply (Func params varargs body closure) args =
+  if num params /= num args && varargs == Nothing
+    then throwError $ NumArgs (num params) args
+    else
+      (liftIO $ bindVars closure $ zip params args)
+        >>= bindVarArgs varargs
+        >>= evalBody
+  where
+    remainingArgs = drop (length params) args
+    num = toInteger . length
+    evalBody env = fmap last $ mapM (eval env) body
+    bindVarArgs arg env = case arg of
+      Just argName -> liftIO $ bindVars env [(argName, List $ remainingArgs)]
+      Nothing -> return env
+
+-- apply func args =
+--   maybe
+--     (throwError $ NotFunction "Unrecognized primitive func args" func)
+--     ($ args)
+--     (lookup func primitives)
+
+primitiveBindings :: IO Env
+primitiveBindings = nullEnv >>= flip bindVars (map makePrimitiveFunc primitives)
+  where
+    makePrimitiveFunc (var, func) = (var, PrimitiveFunc func)
 
 primitives :: [(String, [LispVal] -> ThrowsError LispVal)]
 primitives =
@@ -230,3 +234,9 @@ eqv badArgList = throwError $ NumArgs 2 badArgList
 --       unpacked2 <- unpacker arg2
 --       return $ unpacked1 == unpacked2)
 --     (const $ return False)
+
+makeFunc varargs env params body = return $ Func (map showVal params) varargs body env
+
+makeNormalFunc = makeFunc Nothing
+
+makeVarargs = makeFunc . Just . showVal
