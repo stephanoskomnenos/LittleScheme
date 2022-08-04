@@ -7,7 +7,9 @@ where
 import Control.Monad.Error
 import Data.Functor ((<&>))
 import SkScheme.Env
+import SkScheme.Parser
 import SkScheme.Types
+import System.IO
 
 eval :: Env -> LispVal -> IOThrowsError LispVal
 eval env val@(String _) = return val
@@ -21,6 +23,8 @@ eval env (List [Atom "if", pred, conseq, alt]) =
     case result of
       Bool False -> eval env alt
       otherwise -> eval env conseq
+eval env (List [Atom "load", String filename]) =
+  load filename >>= fmap last . mapM (eval env)
 eval env (List [Atom "set!", Atom var, form]) =
   eval env form >>= setVar env var
 eval env (List [Atom "define", Atom var, form]) =
@@ -53,33 +57,23 @@ eval env (List (function : args)) =
     apply func argVals
 eval _ badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
 
-apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
-apply (PrimitiveFunc func) args = liftThrows $ func args
-apply (Func params varargs body closure) args =
-  if num params /= num args && varargs == Nothing
-    then throwError $ NumArgs (num params) args
-    else
-      (liftIO $ bindVars closure $ zip params args)
-        >>= bindVarArgs varargs
-        >>= evalBody
-  where
-    remainingArgs = drop (length params) args
-    num = toInteger . length
-    evalBody env = fmap last $ mapM (eval env) body
-    bindVarArgs arg env = case arg of
-      Just argName -> liftIO $ bindVars env [(argName, List $ remainingArgs)]
-      Nothing -> return env
-
--- apply func args =
---   maybe
---     (throwError $ NotFunction "Unrecognized primitive func args" func)
---     ($ args)
---     (lookup func primitives)
-
 primitiveBindings :: IO Env
 primitiveBindings = nullEnv >>= flip bindVars (map makePrimitiveFunc primitives)
   where
     makePrimitiveFunc (var, func) = (var, PrimitiveFunc func)
+
+ioPrimitives :: [(String, [LispVal] -> IOThrowsError LispVal)]
+ioPrimitives =
+  [ ("apply", applyProc),
+    ("open-input-file", makePort ReadMode),
+    ("open-output-file", makePort WriteMode),
+    ("close-input-port", closePort),
+    ("close-output-port", closePort),
+    ("read", readProc),
+    ("write", writeProc),
+    ("read-contents", readContents),
+    ("read-all", readAll)
+  ]
 
 primitives :: [(String, [LispVal] -> ThrowsError LispVal)]
 primitives =
@@ -115,6 +109,57 @@ primitives =
     ("eq?", eqv),
     ("eqv?", eqv)
   ]
+
+applyProc :: [LispVal] -> IOThrowsError LispVal
+applyProc [func, List args] = apply func args
+applyProc (func : args) = apply func args
+
+makePort :: IOMode -> [LispVal] -> IOThrowsError LispVal
+makePort mode [String filename] = fmap Port $ liftIO $ openFile filename mode
+
+closePort :: [LispVal] -> IOThrowsError LispVal
+closePort [Port port] = liftIO $ hClose port >> (return $ Bool True)
+closePort _ = return $ Bool False
+
+readProc :: [LispVal] -> IOThrowsError LispVal
+readProc [] = readProc [Port stdin]
+readProc [Port port] = (liftIO $ hGetLine port) >>= liftThrows . readExpr
+
+writeProc :: [LispVal] -> IOThrowsError LispVal
+writeProc [obj] = writeProc [obj, Port stdout]
+writeProc [obj, Port port] = liftIO $ hPrint port obj >> (return $ Bool True)
+
+readContents :: [LispVal] -> IOThrowsError LispVal
+readContents [String filename] = fmap String $ liftIO $ readFile filename
+
+load :: String -> IOThrowsError [LispVal]
+load filename = (liftIO $ readFile filename) >>= liftThrows . readExprList
+
+readAll :: [LispVal] -> IOThrowsError LispVal
+readAll [String filename] = fmap List $ load filename
+
+apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
+apply (PrimitiveFunc func) args = liftThrows $ func args
+apply (Func params varargs body closure) args =
+  if num params /= num args && varargs == Nothing
+    then throwError $ NumArgs (num params) args
+    else
+      (liftIO $ bindVars closure $ zip params args)
+        >>= bindVarArgs varargs
+        >>= evalBody
+  where
+    remainingArgs = drop (length params) args
+    num = toInteger . length
+    evalBody env = fmap last $ mapM (eval env) body
+    bindVarArgs arg env = case arg of
+      Just argName -> liftIO $ bindVars env [(argName, List $ remainingArgs)]
+      Nothing -> return env
+
+-- apply func args =
+--   maybe
+--     (throwError $ NotFunction "Unrecognized primitive func args" func)
+--     ($ args)
+--     (lookup func primitives)
 
 -- TODO: symbol-handling funtions
 

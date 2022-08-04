@@ -1,5 +1,6 @@
 module SkScheme.Parser
   ( readExpr,
+    readExprList,
   )
 where
 
@@ -7,17 +8,20 @@ import Control.Monad.Error
 import Data.Functor
 import Data.Ratio (Rational, (%))
 import Numeric (readHex, readOct)
-import SkScheme.Eval
 import SkScheme.Types
 import Text.ParserCombinators.Parsec hiding (spaces)
 
 symbol :: Parser Char
 symbol = oneOf "!$%&|*+-/:<=?>@^_~#"
 
-readExpr :: String -> ThrowsError LispVal
-readExpr input = case parse parseExpr "lisp" input of
+readOrThrow :: Parser a -> String -> ThrowsError a
+readOrThrow parser input = case parse parser "lisp" input of
   Left err -> throwError $ Parser err
   Right val -> return val
+
+readExpr = readOrThrow parseExpr
+
+readExprList = readOrThrow (endBy parseExpr spaces)
 
 spaces :: Parser ()
 spaces = skipMany1 space

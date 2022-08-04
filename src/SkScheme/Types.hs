@@ -9,6 +9,7 @@ where
 
 import Control.Monad.Error
 import Data.IORef
+import System.IO (Handle)
 import Text.Parsec (ParseError)
 
 data LispVal
@@ -22,6 +23,8 @@ data LispVal
   | Bool Bool
   | PrimitiveFunc ([LispVal] -> ThrowsError LispVal)
   | Func {params :: [String], vararg :: Maybe String, body :: [LispVal], closure :: Env}
+  | IOFunc ([LispVal] -> IOThrowsError LispVal)
+  | Port Handle
 
 data LispError
   = NumArgs Integer [LispVal]
