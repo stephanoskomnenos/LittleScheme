@@ -1,7 +1,12 @@
 module SkScheme.Types
   ( LispVal (..),
+    LispError (..),
+    ThrowsError,
   )
 where
+
+import Control.Monad.Except
+import Text.Parsec (ParseError)
 
 data LispVal
   = Atom String
@@ -12,3 +17,14 @@ data LispVal
   | Rational Rational
   | String String
   | Bool Bool
+
+data LispError
+  = NumArgs Integer [LispVal]
+  | TypeMismatch String LispVal
+  | Parser ParseError
+  | BadSpecialForm String LispVal
+  | NotFunction String String
+  | UnboundVar String String
+  | Default String
+
+type ThrowsError = Either LispError

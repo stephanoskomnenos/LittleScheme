@@ -8,5 +8,6 @@ import SkScheme.Parser
 main :: IO ()
 main = do
   args <- getArgs
-  (print . eval . readExpr . head) args
+  let evaled = fmap show $ readExpr (head args) >>= eval
+  putStrLn $ extractValue $ trapError evaled
 

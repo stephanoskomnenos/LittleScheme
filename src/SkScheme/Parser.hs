@@ -6,18 +6,18 @@ where
 import Data.Functor
 import Data.Ratio (Rational, (%))
 import Numeric (readHex, readOct)
-import Text.ParserCombinators.Parsec hiding (spaces)
-
 import SkScheme.Eval
 import SkScheme.Types
+import Text.ParserCombinators.Parsec hiding (spaces)
+import Control.Monad.Error 
 
 symbol :: Parser Char
 symbol = oneOf "!$%&|*+-/:<=?>@^_~#"
 
-readExpr :: String -> LispVal
+readExpr :: String -> ThrowsError LispVal
 readExpr input = case parse parseExpr "lisp" input of
-  Left err -> String $ "No match: " ++ show err
-  Right val -> val
+  Left err -> throwError $ Parser err
+  Right val -> return val
 
 spaces :: Parser ()
 spaces = skipMany1 space
@@ -50,6 +50,14 @@ parseAtom = do
     "#f" -> Bool False
     _ -> Atom atom
 
+parseBool :: Parser LispVal
+parseBool = do
+  char '#'
+  val <- oneOf "tf"
+  return $ case val of
+    't' -> Bool True
+    _ -> Bool False
+
 parseNumber :: Parser LispVal
 parseNumber =
   parseNumberNoPrefix
@@ -58,7 +66,7 @@ parseNumber =
 parseNumberWithPrefix :: Parser LispVal
 parseNumberWithPrefix = do
   char '#'
-  parseNumberOct <|> parseNumberDec <|> parseNumberHex
+  parseNumberOct <|> parseNumberDec <|> parseNumberHex <|> parseNumberBin
 
 parseNumberDec :: Parser LispVal
 parseNumberDec = do
@@ -92,21 +100,25 @@ parseNumberHex :: Parser LispVal
 parseNumberHex = do
   char 'x'
   num <- many1 $ oneOf "0123456789ABCDEFabcdef"
-  return $ (Number . fst . head . readOct) num
+  return $ (Number . fst . head . readHex) num
 
 parseNumberNoPrefix :: Parser LispVal
 parseNumberNoPrefix = Number . read <$> many1 digit
 
 parseExpr :: Parser LispVal
 parseExpr =
-  parseAtom
-    <|> parseString
+  try parseBool
+    <|> try parseFloat
+    <|> try parseRational
     <|> parseNumber
+    <|> parseString
+    <|> parseAtom
     <|> parseQuoted
-    <|> do char '('
-           x <- try parseList <|> parseDottedList
-           char ')'
-           return x
+    <|> do
+      char '('
+      x <- try parseList <|> parseDottedList
+      char ')'
+      return x
 
 -- parseNumberA :: Parser LispVal
 -- parseNumberA = do
@@ -146,4 +158,3 @@ parseQuoted = do
   char '\''
   x <- parseExpr
   return $ List [Atom "quote", x]
-

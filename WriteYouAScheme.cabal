@@ -24,6 +24,7 @@ extra-source-files: CHANGELOG.md
 library
 
     build-depends:    base ^>=4.14.3.0,
+                      mtl,
                       parsec
     exposed-modules:  SkScheme.Parser,
                       SkScheme.Types,
