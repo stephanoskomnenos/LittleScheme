@@ -17,6 +17,7 @@ eval :: Env -> LispVal -> IOThrowsError LispVal
 eval env val@(String _) = return val
 eval env val@(Number _) = return val
 eval env val@(Bool _) = return val
+eval env val@(Float _) = return val
 eval env (Atom id) = getVar env id
 eval env (List [Atom "quote", val]) = return val
 eval env (List [Atom "if", pred, conseq, alt]) =
@@ -66,7 +67,7 @@ eval env (List (function : args)) =
     func <- eval env function
     argVals <- mapM (eval env) args
     apply func argVals
-eval _ badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
+eval _ badForm = throwError $ BadSpecialForm "eval: Unrecognized special form" badForm
 
 primitiveBindings :: IO Env
 primitiveBindings =
@@ -92,13 +93,11 @@ ioPrimitives =
 
 primitives :: [(String, [LispVal] -> ThrowsError LispVal)]
 primitives =
-  [ ("+", numericBinop (+)),
-    ("-", numericBinop (-)),
-    ("*", numericBinop (*)),
-    ("/", numericBinop div),
-    ("mod", numericBinop mod),
-    ("quotient", numericBinop quot),
-    ("remainder", numericBinop rem),
+  [ ("+", numericBinop numericAdd),
+    ("-", numericBinop numericSub),
+    ("*", numericBinop numericMul),
+    ("/", numericBinop numericDiv),
+    ("mod", numericBinop numericMod),
     ("not", unaryOp notP),
     ("symbol?", unaryOp symbolP),
     ("list?", unaryOp listP),
@@ -170,13 +169,7 @@ apply (Func params varargs body closure) args =
       Just argName -> liftIO $ bindVars env [(argName, List remainingArgs)]
       Nothing -> return env
 apply (IOFunc func) args = func args
-apply badForm _ = throwError $ BadSpecialForm "Unrecognized special form" badForm
-
--- apply func args =
---   maybe
---     (throwError $ NotFunction "Unrecognized primitive func args" func)
---     ($ args)
---     (lookup func primitives)
+apply badForm _ = throwError $ BadSpecialForm "apply: Unrecognized special form" badForm
 
 -- TODO: symbol-handling funtions
 
@@ -198,13 +191,47 @@ stringP _ = Bool False
 numberP (Number _) = Bool True
 numberP _ = Bool False
 
-numericBinop :: (Integer -> Integer -> Integer) -> [LispVal] -> ThrowsError LispVal
+numericAdd :: LispVal -> LispVal -> ThrowsError LispVal
+numericAdd (Number a) (Number b) = return $ Number $ a + b
+numericAdd (Float a) (Float b) = return $ Float $ a + b
+numericAdd (Float a) (Number b) = return $ Float $ a + fromInteger b
+numericAdd (Number a) (Float b) = return $ Float $ fromInteger a + b
+
+numericSub :: LispVal -> LispVal -> ThrowsError LispVal
+numericSub (Number a) (Number b) = return $ Number $ a - b
+numericSub (Float a) (Float b) = return $ Float $ a - b
+numericSub (Float a) (Number b) = return $ Float $ a - fromInteger b
+numericSub (Number a) (Float b) = return $ Float $ fromInteger a - b
+
+numericMul :: LispVal -> LispVal -> ThrowsError LispVal
+numericMul (Number a) (Number b) = return $ Number $ a * b
+numericMul (Float a) (Float b) = return $ Float $ a * b
+numericMul (Float a) (Number b) = return $ Float $ a * fromInteger b
+numericMul (Number a) (Float b) = return $ Float $ fromInteger a * b
+
+numericDiv :: LispVal -> LispVal -> ThrowsError LispVal
+numericDiv (Number a) (Number b) = return $ Number $ div a b
+numericDiv (Float a) (Float b) = return $ Float $ a / b
+numericDiv (Float a) (Number b) = return $ Float $ a / fromInteger b
+numericDiv (Number a) (Float b) = return $ Float $ fromInteger a / b
+
+numericMod :: LispVal -> LispVal -> ThrowsError LispVal
+numericMod (Number a) (Number b) = return $ Number $ mod a b
+numericMod (Number _) notNumber = throwError $ TypeMismatch "number" notNumber
+numericMod notNumber _ = throwError $ TypeMismatch "number" notNumber
+
+numericBinop :: (LispVal -> LispVal -> ThrowsError LispVal) -> [LispVal] -> ThrowsError LispVal
 numericBinop op singleVal@[_] = throwError $ NumArgs 2 singleVal
-numericBinop op params = mapM unpackNum params <&> Number . foldl1 op
+numericBinop op params = foldl1M op params
+
+foldl1M :: (Monad m) => (a -> a -> m a) -> [a] -> m a
+foldl1M f (x : xs) = foldM f x xs
 
 unaryOp :: (LispVal -> LispVal) -> [LispVal] -> ThrowsError LispVal
 unaryOp op [param] = return $ op param
 unaryOp op params = throwError $ NumArgs 1 params
+
+-- TODO: boolBinop: support Float mixed with Number
 
 boolBinop :: (LispVal -> ThrowsError a) -> (a -> a -> Bool) -> [LispVal] -> ThrowsError LispVal
 boolBinop unpacker op args =
@@ -223,11 +250,6 @@ boolBoolBinop = boolBinop unpackBool
 
 unpackNum :: LispVal -> ThrowsError Integer
 unpackNum (Number n) = return n
--- unpackNum (String n) =
---   let parsed = reads n
---    in if null parsed
---         then 0
---         else fst $ head parsed
 unpackNum (List [n]) = unpackNum n
 unpackNum notNum = throwError $ TypeMismatch "number" notNum
 
