@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
+
 module SkScheme.Env
   ( showVal,
     trapError,

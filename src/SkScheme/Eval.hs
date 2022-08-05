@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
+
 module SkScheme.Eval
   ( eval,
     primitiveBindings,
@@ -22,9 +24,12 @@ eval env (List [Atom "if", pred, conseq, alt]) =
     result <- eval env pred
     case result of
       Bool False -> eval env alt
-      otherwise -> eval env conseq
+      _ -> eval env conseq
 eval env (List [Atom "load", String filename]) =
   load filename >>= fmap last . mapM (eval env)
+eval env (List [Atom "eval", Atom varId]) = getVar env varId >>= eval env
+eval env (List [Atom "eval", List [Atom "quote", quoted]]) =
+  eval env quoted
 eval env (List [Atom "set!", Atom var, form]) =
   eval env form >>= setVar env var
 eval env (List [Atom "define", Atom var, form]) =
@@ -33,6 +38,12 @@ eval env (List (Atom "define" : List (Atom var : params) : body)) =
   makeNormalFunc env params body >>= defineVar env var
 eval env (List (Atom "define" : DottedList (Atom var : params) varargs : body)) =
   makeVarargs varargs env params body >>= defineVar env var
+eval env (List (Atom "let" : (List valueDefList : body))) =
+  do
+    varBindTuples <- mapM (makeVarBindTuples env) valueDefList
+    liftIO (bindVars env varBindTuples) >>= evalBody
+  where
+    evalBody env = last <$> mapM (eval env) body
 eval env (List (Atom "lambda" : List params : body)) =
   makeNormalFunc env params body
 eval env (List (Atom "lambda" : DottedList params varargs : body)) =
@@ -48,7 +59,7 @@ eval env (List (Atom "cond" : xs)) =
         result <- eval env pred
         case result of
           Bool False -> eval env $ List (Atom "cond" : drop 1 xs)
-          otherwise -> eval env conseq
+          _ -> eval env conseq
       badForm -> throwError $ BadSpecialForm "Syntax error in `cond` expression" badForm
 eval env (List (function : args)) =
   do
@@ -58,9 +69,13 @@ eval env (List (function : args)) =
 eval _ badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
 
 primitiveBindings :: IO Env
-primitiveBindings = nullEnv >>= flip bindVars (map makePrimitiveFunc primitives)
+primitiveBindings =
+  nullEnv
+    >>= flip
+      bindVars
+      (map (makeFunc PrimitiveFunc) primitives ++ map (makeFunc IOFunc) ioPrimitives)
   where
-    makePrimitiveFunc (var, func) = (var, PrimitiveFunc func)
+    makeFunc constructor (var, func) = (var, constructor func)
 
 ioPrimitives :: [(String, [LispVal] -> IOThrowsError LispVal)]
 ioPrimitives =
@@ -136,7 +151,7 @@ load :: String -> IOThrowsError [LispVal]
 load filename = (liftIO $ readFile filename) >>= liftThrows . readExprList
 
 readAll :: [LispVal] -> IOThrowsError LispVal
-readAll [String filename] = fmap List $ load filename
+readAll [String filename] = List <$> load filename
 
 apply :: LispVal -> [LispVal] -> IOThrowsError LispVal
 apply (PrimitiveFunc func) args = liftThrows $ func args
@@ -144,7 +159,7 @@ apply (Func params varargs body closure) args =
   if num params /= num args && varargs == Nothing
     then throwError $ NumArgs (num params) args
     else
-      (liftIO $ bindVars closure $ zip params args)
+      liftIO (bindVars closure $ zip params args)
         >>= bindVarArgs varargs
         >>= evalBody
   where
@@ -152,8 +167,10 @@ apply (Func params varargs body closure) args =
     num = toInteger . length
     evalBody env = fmap last $ mapM (eval env) body
     bindVarArgs arg env = case arg of
-      Just argName -> liftIO $ bindVars env [(argName, List $ remainingArgs)]
+      Just argName -> liftIO $ bindVars env [(argName, List remainingArgs)]
       Nothing -> return env
+apply (IOFunc func) args = func args
+apply badForm _ = throwError $ BadSpecialForm "Unrecognized special form" badForm
 
 -- apply func args =
 --   maybe
@@ -285,3 +302,10 @@ makeFunc varargs env params body = return $ Func (map showVal params) varargs bo
 makeNormalFunc = makeFunc Nothing
 
 makeVarargs = makeFunc . Just . showVal
+
+makeVarBindTuples :: Env -> LispVal -> IOThrowsError (String, LispVal)
+makeVarBindTuples env (List [Atom name, valueExpr]) =
+  do
+    value <- eval env valueExpr
+    return (name, value)
+makeVarBindTuples _ badForm = throwError $ BadSpecialForm "Syntax error in `let` expression: " badForm
